@@ -231,17 +231,11 @@ impl posts::post_service_server::PostService for MyPostService {
         let mut filtered = posts.clone();
 
         if !filter.ids.is_empty() {
-            filtered = filtered
-                .into_iter()
-                .filter(|p| filter.ids.contains(&p.id))
-                .collect();
+            filtered.retain(|p| filter.ids.contains(&p.id));
         }
 
         if let Some(user_id) = filter.user_id {
-            filtered = filtered
-                .into_iter()
-                .filter(|p| p.user_id == user_id)
-                .collect();
+            filtered.retain(|p| p.user_id == user_id);
         }
 
         if let (Some(start), Some(limit)) = (filter.start, filter.limit) {
@@ -360,21 +354,15 @@ impl users::user_service_server::UserService for MyUserService {
         let mut filtered = users.clone();
 
         if !filter.ids.is_empty() {
-            filtered = filtered
-                .into_iter()
-                .filter(|u| filter.ids.contains(&u.id))
-                .collect();
+            filtered.retain(|u| filter.ids.contains(&u.id));
         }
 
         if let Some(username) = filter.username {
-            filtered = filtered
-                .into_iter()
-                .filter(|u| u.username == username)
-                .collect();
+            filtered.retain(|u| u.username == username);
         }
 
         if let Some(email) = filter.email {
-            filtered = filtered.into_iter().filter(|u| u.email == email).collect();
+            filtered.retain(|u| u.email == email);
         }
 
         if let (Some(start), Some(limit)) = (filter.start, filter.limit) {
@@ -619,5 +607,229 @@ impl Service for CompositeService {
             .map_err(|e| shuttle_runtime::Error::Custom(anyhow::anyhow!(e)))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use posts::post_service_server::PostService;
+    use tonic::Request;
+    use users::user_service_server::UserService;
+
+    fn create_test_post() -> posts::Post {
+        posts::Post {
+            id: 0,
+            user_id: 1,
+            title: "Test Post".to_string(),
+            body: "This is a test post content".to_string(),
+        }
+    }
+
+    fn create_test_user() -> users::User {
+        users::User {
+            id: 0,
+            name: "Test User".to_string(),
+            username: "testuser".to_string(),
+            email: "test@example.com".to_string(),
+            address: Some(users::Address {
+                street: "123 Test St".to_string(),
+                suite: "Apt 1".to_string(),
+                city: "Test City".to_string(),
+                zipcode: "12345".to_string(),
+                geo: Some(users::Geo {
+                    lat: "40.7128".to_string(),
+                    lng: "-74.0060".to_string(),
+                }),
+            }),
+            phone: "123-456-7890".to_string(),
+            website: "test.com".to_string(),
+            company: Some(users::Company {
+                name: "Test Company".to_string(),
+                catch_phrase: "Testing is our business".to_string(),
+                bs: "innovative testing solutions".to_string(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_post_service_crud() {
+        let service = MyPostService::new();
+
+        let new_post = create_test_post();
+        let create_response = service
+            .create_post(Request::new(new_post.clone()))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let created_post = create_response.post.unwrap();
+        assert!(
+            created_post.id > 0,
+            "Created post should have an ID assigned"
+        );
+        assert_eq!(created_post.title, "Test Post");
+        assert_eq!(created_post.body, "This is a test post content");
+
+        let get_response = service
+            .get_post(Request::new(posts::PostRequest {
+                id: created_post.id,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(get_response.id, created_post.id);
+        assert_eq!(get_response.title, created_post.title);
+
+        let mut updated_post = created_post.clone();
+        updated_post.title = "Updated Title".to_string();
+
+        let update_response = service
+            .update_post(Request::new(updated_post.clone()))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let updated = update_response.post.unwrap();
+        assert_eq!(updated.title, "Updated Title");
+        assert_eq!(updated.id, created_post.id);
+
+        let filter = posts::Filter {
+            ids: vec![created_post.id],
+            user_id: Some(1),
+            start: Some(0),
+            limit: Some(10),
+        };
+
+        let list_response = service
+            .list_posts(Request::new(filter))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(
+            !list_response.posts.is_empty(),
+            "Should find the created post"
+        );
+        assert_eq!(list_response.posts[0].id, created_post.id);
+
+        let delete_response = service
+            .delete_post(Request::new(posts::PostRequest {
+                id: created_post.id,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(delete_response.success, "Post deletion should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_user_service_crud() {
+        let service = MyUserService::new();
+
+        let new_user = create_test_user();
+        let create_response = service
+            .create_user(Request::new(new_user.clone()))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let created_user = create_response.user.unwrap();
+        assert!(
+            created_user.id > 0,
+            "Created user should have an ID assigned"
+        );
+        assert_eq!(created_user.name, "Test User");
+        assert_eq!(created_user.email, "test@example.com");
+
+        let mut patch_user = created_user.clone();
+        patch_user.name = "Updated Name".to_string();
+
+        let patch_request = users::PatchUserRequest {
+            id: created_user.id,
+            user: Some(patch_user),
+        };
+
+        let patch_response = service
+            .patch_user(Request::new(patch_request))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let patched_user = patch_response.user.unwrap();
+        assert_eq!(patched_user.name, "Updated Name");
+        assert_eq!(patched_user.email, created_user.email);
+
+        let filter = users::Filter {
+            ids: vec![created_user.id],
+            username: Some("testuser".to_string()),
+            email: None,
+            start: Some(0),
+            limit: Some(10),
+        };
+
+        let list_response = service
+            .list_users(Request::new(filter))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(
+            !list_response.users.is_empty(),
+            "Should find the created user"
+        );
+        assert_eq!(list_response.users[0].id, created_user.id);
+
+        let delete_response = service
+            .delete_user(Request::new(users::UserRequest {
+                id: created_user.id,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(delete_response.success, "User deletion should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_error_handling() {
+        let post_service = MyPostService::new();
+        let user_service = MyUserService::new();
+
+        let post_result = post_service
+            .get_post(Request::new(posts::PostRequest { id: 99999 }))
+            .await;
+
+        assert!(post_result.is_err(), "Should fail for non-existent post");
+        assert_eq!(
+            post_result.unwrap_err().code(),
+            tonic::Code::NotFound,
+            "Should return NotFound error"
+        );
+
+        let user_result = user_service
+            .get_user(Request::new(users::UserRequest { id: 99999 }))
+            .await;
+
+        assert!(user_result.is_err(), "Should fail for non-existent user");
+        assert_eq!(
+            user_result.unwrap_err().code(),
+            tonic::Code::NotFound,
+            "Should return NotFound error"
+        );
+
+        let invalid_patch = users::PatchUserRequest {
+            id: 99999,
+            user: None,
+        };
+
+        let patch_result = user_service.patch_user(Request::new(invalid_patch)).await;
+
+        assert!(
+            patch_result.is_err(),
+            "Should fail for invalid patch request"
+        );
     }
 }
